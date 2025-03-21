@@ -31,7 +31,10 @@ import (
 	"istio.io/istio/pkg/test/util/retry"
 )
 
-const systemNS = "istio-system"
+const (
+	systemNS        = "istio-system"
+	testTaintPrefix = "testTaintPrefix/"
+)
 
 var cniPodLabels = map[string]string{
 	"k8s-app":    "istio-cni-node",
@@ -54,12 +57,12 @@ func setupLogging() {
 	}
 }
 
-func newNodeUntainterTestServer(t *testing.T) *nodeTainterTestServer {
+func newNodeUntainterTestServer(t *testing.T, taintPrefix string) *nodeTainterTestServer {
 	stop := make(chan struct{})
 	t.Cleanup(func() { close(stop) })
 	client := kubelib.NewFakeClient()
 
-	nodeUntainter := NewNodeUntainter(stop, client, systemNS, systemNS, krt.GlobalDebugHandler)
+	nodeUntainter := NewNodeUntainter(stop, client, systemNS, systemNS, taintPrefix, krt.GlobalDebugHandler)
 	go nodeUntainter.Run(stop)
 	client.RunAndWait(stop)
 	kubelib.WaitForCacheSync("test", stop, nodeUntainter.HasSynced)
@@ -78,60 +81,73 @@ func newNodeUntainterTestServer(t *testing.T) *nodeTainterTestServer {
 func TestNodeUntainter(t *testing.T) {
 	setupLogging()
 	test.SetForTest(t, &features.EnableNodeUntaintControllers, true)
-	s := newNodeUntainterTestServer(t)
-	s.addTaintedNodes(t, "node1", "node2", "node3")
+	s := newNodeUntainterTestServer(t, "")
+	s.addTaintedNodes(t, "", "node1", "node2", "node3")
 	s.addPod(t, "node3", true, map[string]string{"k8s-app": "other-app"}, "")
 	s.addCniPod(t, "node2", false)
 	s.addCniPod(t, "node1", true)
-	s.assertNodeUntainted(t, "node1")
-	s.assertNodeTainted(t, "node2")
-	s.assertNodeTainted(t, "node3")
+	s.assertNodeUntainted(t, "node1", "")
+	s.assertNodeTainted(t, "node2", "")
+	s.assertNodeTainted(t, "node3", "")
+}
+
+func TestNodeUntainterWithPrefix(t *testing.T) {
+	setupLogging()
+	test.SetForTest(t, &features.EnableNodeUntaintControllers, true)
+	s := newNodeUntainterTestServer(t, testTaintPrefix)
+	s.addTaintedNodes(t, testTaintPrefix, "node1", "node2", "node3")
+	s.addPod(t, "node3", true, map[string]string{"k8s-app": "other-app"}, "")
+	s.addCniPod(t, "node2", false)
+	s.addCniPod(t, "node1", true)
+	s.assertNodeUntainted(t, "node1", testTaintPrefix)
+	s.assertNodeTainted(t, "node2", testTaintPrefix)
+	s.assertNodeTainted(t, "node3", testTaintPrefix)
 }
 
 func TestNodeUntainterOnlyUntaintsWhenIstiocniInourNs(t *testing.T) {
 	test.SetForTest(t, &features.EnableNodeUntaintControllers, true)
-	s := newNodeUntainterTestServer(t)
-	s.addTaintedNodes(t, "node1", "node2")
+	s := newNodeUntainterTestServer(t, testTaintPrefix)
+	s.addTaintedNodes(t, testTaintPrefix, "node1", "node2")
 	s.addPod(t, "node2", true, cniPodLabels, "default")
 	s.addCniPod(t, "node1", true)
 
 	// wait for the untainter to run
-	s.assertNodeUntainted(t, "node1")
-	s.assertNodeTainted(t, "node2")
+	s.assertNodeUntainted(t, "node1", testTaintPrefix)
+	s.assertNodeTainted(t, "node2", testTaintPrefix)
 }
 
-func (s *nodeTainterTestServer) assertNodeTainted(t *testing.T, node string) {
+func (s *nodeTainterTestServer) assertNodeTainted(t *testing.T, node string, taintPrefix string) {
 	t.Helper()
-	assert.Equal(t, s.isNodeUntainted(node), false)
+	assert.Equal(t, s.isNodeUntainted(node, taintPrefix), false)
 }
 
-func (s *nodeTainterTestServer) assertNodeUntainted(t *testing.T, node string) {
+func (s *nodeTainterTestServer) assertNodeUntainted(t *testing.T, node string, taintPrefix string) {
 	t.Helper()
 	assert.EventuallyEqual(t, func() bool {
-		return s.isNodeUntainted(node)
+		return s.isNodeUntainted(node, taintPrefix)
 	}, true, retry.Timeout(time.Second*3))
 }
 
-func (s *nodeTainterTestServer) isNodeUntainted(node string) bool {
+func (s *nodeTainterTestServer) isNodeUntainted(node string, taintPrefix string) bool {
 	n := s.nc.Get(node, "")
 	if n == nil {
 		return false
 	}
 	for _, t := range n.Spec.Taints {
-		if t.Key == TaintName {
+		if t.Key == (taintPrefix + DefaultTaintName) {
 			return false
 		}
 	}
 	return true
 }
 
-func (s *nodeTainterTestServer) addTaintedNodes(t *testing.T, nodes ...string) {
+func (s *nodeTainterTestServer) addTaintedNodes(t *testing.T, taintPrefix string, nodes ...string) {
 	t.Helper()
 	for _, node := range nodes {
 		node := generateNode(node, nil)
 		// add our special taint
 		node.Spec.Taints = append(node.Spec.Taints, corev1.Taint{
-			Key:    TaintName,
+			Key:    taintPrefix + DefaultTaintName,
 			Value:  "true",
 			Effect: corev1.TaintEffectNoSchedule,
 		})

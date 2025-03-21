@@ -142,6 +142,8 @@ func addFlags(c *cobra.Command) {
 		"Select a namespace where the controller resides. If not set, uses ${POD_NAMESPACE} environment variable")
 	c.PersistentFlags().StringVar(&serverArgs.CniNamespace, "cniNamespace", bootstrap.PodNamespace,
 		"Select a namespace where the istio-cni resides. If not set, uses ${POD_NAMESPACE} environment variable")
+	c.PersistentFlags().StringVar(&serverArgs.TaintPrefix, "taintPrefix", "",
+		"Prefix string for taint name to remove from node when the istio-cni pod becomes ready.")
 	c.PersistentFlags().DurationVar(&serverArgs.ShutdownDuration, "shutdownDuration", 10*time.Second,
 		"Duration the discovery server needs to terminate gracefully")
 
